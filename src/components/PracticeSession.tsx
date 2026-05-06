@@ -1,0 +1,496 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Mic, MicOff, RotateCcw, Send, CheckCircle2, AlertCircle, Volume2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { analyzePractice } from '../lib/gemini';
+import { PracticeFeedback } from '../types';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { useAuth } from '../context/AuthContext';
+
+interface PracticeSessionProps {
+  targetWord: string;
+  isPro?: boolean;
+  onUpgrade?: () => void;
+  onPracticeComplete?: () => void;
+}
+
+export default function PracticeSession({ targetWord, isPro = false, onUpgrade, onPracticeComplete }: PracticeSessionProps) {
+  const { user } = useAuth();
+  const missions = [
+    { id: 'free', label: 'Free Style', icon: '✨', prompt: 'Use the word in any sentence.' },
+    { id: 'office', label: 'Office Talk', icon: '💼', prompt: `Use "${targetWord}" in a professional meeting or email response context.` },
+    { id: 'story', label: 'Storyteller', icon: '📖', prompt: `Incorporate "${targetWord}" into a brief story about something that happened today.` },
+    { id: 'social', label: 'Coffee Shop', icon: '☕', prompt: `Use "${targetWord}" in a casual chat with a friend.` },
+  ];
+
+  const [activeMission, setActiveMission] = useState(missions[0]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isSoundDetected, setIsSoundDetected] = useState(false);
+  const [transcript, setTranscript] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [feedback, setFeedback] = useState<PracticeFeedback | null>(null);
+  const [errorStatus, setErrorStatus] = useState<string | null>(null);
+  const [speechRate, setSpeechRate] = useState(0.9);
+  const [practiceCount, setPracticeCount] = useState(0);
+  
+  const FREE_LIMIT = 3;
+  const isLimitReached = !isPro && practiceCount >= FREE_LIMIT;
+  
+  const recognitionRef = useRef<any>(null);
+
+  const initRecognition = useCallback(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+      setErrorStatus("Your browser does not support Speech Recognition. Please use Chrome or Safari.");
+      return null;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      setIsRecording(true);
+      setErrorStatus(null);
+    };
+
+    recognition.onsoundstart = () => setIsSoundDetected(true);
+    recognition.onsoundend = () => setIsSoundDetected(false);
+
+    recognition.onresult = (event: any) => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+
+      if (finalTranscript) {
+        setTranscript(prev => (prev + ' ' + finalTranscript).trim());
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      setIsRecording(false);
+      setIsSoundDetected(false);
+      
+      const errorMap: Record<string, string> = {
+        'not-allowed': 'Microphone access denied. Check your browser permissions.',
+        'no-speech': 'No speech detected. Try speaking a bit louder.',
+        'network': 'Network error. Recognition requires an active internet connection.',
+        'aborted': 'Recognition was interrupted.',
+        'audio-capture': 'No microphone found. Please connect a mic.',
+      };
+
+      setErrorStatus(errorMap[event.error] || `Error: ${event.error}`);
+      console.error('Speech Recognition Error:', event.error);
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+      setIsSoundDetected(false);
+    };
+
+    return recognition;
+  }, []);
+
+  useEffect(() => {
+    recognitionRef.current = initRecognition();
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+    };
+  }, [initRecognition]);
+
+  const toggleRecording = () => {
+    if (isLimitReached) {
+      onUpgrade?.();
+      return;
+    }
+
+    if (isRecording) {
+      recognitionRef.current?.stop();
+    } else {
+      setTranscript('');
+      setFeedback(null);
+      setErrorStatus(null);
+      try {
+        recognitionRef.current?.start();
+      } catch (e) {
+        // Handle case where recognition might still be in a closing state
+        recognitionRef.current = initRecognition();
+        recognitionRef.current?.start();
+      }
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!transcript) return;
+    setIsAnalyzing(true);
+    setErrorStatus(null);
+    setFeedback(null);
+    try {
+      const result = await analyzePractice(transcript, targetWord, activeMission.prompt);
+      setFeedback(result);
+      setPracticeCount(prev => prev + 1);
+      onPracticeComplete?.();
+
+      // Save to Firestore if user is logged in
+      if (user) {
+        const path = `users/${user.uid}/practice_history`;
+        try {
+          await addDoc(collection(db, path), {
+            userId: user.uid,
+            word: targetWord,
+            transcript: transcript,
+            clarity: result.clarity,
+            accuracy: result.accuracy,
+            feedback: result.feedback,
+            suggestions: result.suggestions,
+            mission: activeMission.label,
+            createdAt: serverTimestamp()
+          });
+        } catch (dbError) {
+          handleFirestoreError(dbError, OperationType.CREATE, path);
+        }
+      }
+    } catch (error: any) {
+      console.error('Failed to analyze', error);
+      setErrorStatus(error.message || 'An unexpected error occurred during analysis. Please try again.');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const reset = () => {
+    setTranscript('');
+    setFeedback(null);
+  };
+
+  const speakFeedback = (text: string) => {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = speechRate;
+    utterance.pitch = 1.1;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  return (
+    <div className="w-full max-w-2xl mx-auto mt-12 pb-24">
+      <div className="text-center mb-8">
+        <h3 className="text-2xl font-black mb-2">Practice Sanctuary</h3>
+        <p className="text-white/40 text-sm">Use the word in a sentence and get AI feedback.</p>
+        
+        {/* Mission Selector */}
+        <div className="flex flex-wrap justify-center gap-2 mt-8">
+          {missions.map((mission, idx) => (
+            <button
+              key={`mission-${mission.id}-${idx}`}
+              onClick={() => {
+                setActiveMission(mission);
+                reset();
+              }}
+              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                activeMission.id === mission.id 
+                  ? 'bg-brand-primary text-black border-brand-primary' 
+                  : 'bg-white/5 text-white/40 border-white/10 hover:bg-white/10'
+              }`}
+            >
+              <span className="mr-2">{mission.icon}</span>
+              {mission.label}
+            </button>
+          ))}
+        </div>
+
+        {!isPro && (
+          <div className="mt-6 flex items-center justify-center gap-2">
+            <div className="h-1 w-32 bg-white/5 rounded-full overflow-hidden">
+               <motion.div 
+                 initial={{ width: 0 }}
+                 animate={{ width: `${(practiceCount / FREE_LIMIT) * 100}%` }}
+                 className="h-full bg-brand-primary"
+               />
+            </div>
+            <span className="text-[10px] font-bold text-white/30 uppercase tracking-widest">
+              {practiceCount} / {FREE_LIMIT} Free Attempts
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="glass p-8 rounded-3xl relative overflow-hidden">
+        {/* Mission Briefing Overlay */}
+        <div className="mb-6 p-4 bg-brand-primary/5 border border-brand-primary/20 rounded-2xl">
+          <div className="flex items-center gap-2 mb-1">
+             <span className="text-[10px] font-black uppercase tracking-widest text-brand-primary">Current Mission:</span>
+             <span className="text-[10px] font-bold text-white/60">{activeMission.label}</span>
+          </div>
+          <p className="text-xs text-white/80 italic serif-italic">"{activeMission.prompt}"</p>
+        </div>
+        <AnimatePresence>
+          {isAnalyzing && (
+            <motion.div 
+              key="analyzing-overlay"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-20 bg-black/60 backdrop-blur-md flex flex-col items-center justify-center gap-6"
+            >
+              <div className="flex gap-2">
+                {[0, 1, 2].map((i) => (
+                  <motion.div
+                    key={`loading-dot-${i}`}
+                    animate={{
+                      scale: [1, 1.5, 1],
+                      opacity: [0.3, 1, 0.3],
+                    }}
+                    transition={{
+                      duration: 1,
+                      repeat: Infinity,
+                      delay: i * 0.2,
+                    }}
+                    className="w-3 h-3 bg-brand-primary rounded-full"
+                  />
+                ))}
+              </div>
+              <span className="text-xs font-black uppercase tracking-[0.3em] text-brand-primary">Synthesizing Feedback</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {errorStatus && (
+            <motion.div 
+              key="error-status"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              className="mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3"
+            >
+              <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={18} />
+              <p className="text-xs text-red-200/80 leading-relaxed">{errorStatus}</p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="mb-6 min-h-[140px] bg-black/20 rounded-2xl p-6 border border-white/5 font-mono text-sm leading-relaxed relative flex flex-col">
+          <div className="flex-1">
+            {transcript ? (
+              <span className="text-white/90">{transcript}</span>
+            ) : (
+              <span className="text-white/20 italic">Your speech will appear here...</span>
+            )}
+          </div>
+          
+          <AnimatePresence>
+            {isRecording && (
+              <motion.div 
+                key="recording-status"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="flex items-end gap-1 h-8 mt-4"
+              >
+                {[...Array(12)].map((_, i) => (
+                  <motion.div
+                    key={`sound-bar-${i}`}
+                    animate={{
+                      height: isSoundDetected ? [4, Math.random() * 24 + 4, 4] : 4,
+                    }}
+                    transition={{
+                      duration: 0.5,
+                      repeat: Infinity,
+                      delay: i * 0.05,
+                    }}
+                    className="w-1 bg-brand-primary/40 rounded-full"
+                  />
+                ))}
+                <span className="ml-4 text-[10px] uppercase font-bold text-brand-primary animate-pulse">
+                  {isSoundDetected ? 'Sound Detected' : 'Listening...'}
+                </span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        <div className="flex justify-center items-center gap-6">
+          <div className="relative">
+            <AnimatePresence>
+              {isRecording && (
+                <motion.div 
+                  key="recording-pulse"
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: 1.5, opacity: 0 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                  className="absolute inset-0 bg-red-500 rounded-full z-0"
+                />
+              )}
+            </AnimatePresence>
+            
+            <motion.button
+              whileTap={{ scale: 0.9 }}
+              onClick={toggleRecording}
+              className={`relative z-10 p-6 rounded-full transition-all flex items-center justify-center ${
+                isLimitReached
+                  ? 'bg-white/5 border border-white/10 opacity-50 cursor-not-allowed'
+                  : isRecording 
+                    ? 'bg-red-500 shadow-[0_0_30px_rgba(239,68,68,0.6)]' 
+                    : 'bg-white/10 hover:bg-white/20'
+              }`}
+            >
+              {isLimitReached ? <Mic size={28} className="text-white/20" /> : isRecording ? <MicOff size={28} /> : <Mic size={28} />}
+            </motion.button>
+          </div>
+
+          <AnimatePresence>
+            {isLimitReached && (
+              <motion.div
+                key="limit-reached-warning"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="absolute right-8 top-1/2 -translate-y-1/2 max-w-[180px]"
+              >
+                <div className="glass p-4 rounded-2xl border border-brand-primary/30 text-center">
+                  <p className="text-[10px] font-bold text-white/60 mb-2 uppercase tracking-tighter leading-tight">Daily limit reached for free users.</p>
+                  <button 
+                    onClick={onUpgrade}
+                    className="w-full py-2 bg-brand-primary rounded-lg text-black text-[9px] font-black uppercase tracking-widest"
+                  >
+                    Upgrade to Pro
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {transcript && !isRecording && (
+              <motion.div 
+                key="practice-actions"
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.8 }}
+                className="flex gap-4"
+              >
+                <button 
+                  onClick={reset}
+                  className="p-4 rounded-full bg-white/5 hover:bg-white/10 transition-colors"
+                  title="Reset"
+                >
+                  <RotateCcw size={20} className="text-white/50" />
+                </button>
+                <button 
+                  onClick={handleSubmit}
+                  disabled={isAnalyzing}
+                  className="flex items-center gap-2 px-8 py-4 bg-brand-primary rounded-full font-bold text-sm tracking-widest uppercase hover:bg-brand-secondary transition-all disabled:opacity-50"
+                >
+                  {isAnalyzing ? 'Analyzing...' : 'Submit Practice'}
+                  <Send size={16} />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        <AnimatePresence>
+          {feedback && (
+            <motion.div
+              key="practice-feedback"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-8 pt-8 border-t border-white/10"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-4">
+                  <span className="text-[10px] uppercase tracking-widest font-bold text-white/40">Voice Speed</span>
+                  <div className="flex items-center gap-3 bg-white/5 px-4 py-2 rounded-full border border-white/10">
+                    <span className="text-[10px] text-white/30">0.5x</span>
+                    <input 
+                      type="range" 
+                      min="0.5" 
+                      max="1.5" 
+                      step="0.1" 
+                      value={speechRate}
+                      onChange={(e) => setSpeechRate(parseFloat(e.target.value))}
+                      className="w-24 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-brand-primary"
+                    />
+                    <span className="text-[10px] text-white/30">1.5x</span>
+                    <span className="text-xs font-mono text-brand-primary ml-1 w-8">{speechRate}x</span>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => speakFeedback(feedback.feedback)}
+                  className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 rounded-full text-xs font-bold transition-all border border-white/10"
+                >
+                  <Volume2 size={16} className="text-brand-primary" />
+                  Listen to Feedback
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-6 mb-8">
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center text-[10px] uppercase tracking-widest font-bold text-white/40">
+                    <span>Clarity</span>
+                    <span className={feedback.clarity > 70 ? 'text-green-400' : 'text-brand-primary'}>{feedback.clarity}%</span>
+                  </div>
+                  <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${feedback.clarity}%` }}
+                      className="h-full bg-brand-primary"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center text-[10px] uppercase tracking-widest font-bold text-white/40">
+                    <span>Word Accuracy</span>
+                    <span className={feedback.accuracy > 70 ? 'text-green-400' : 'text-brand-primary'}>{feedback.accuracy}%</span>
+                  </div>
+                  <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${feedback.accuracy}%` }}
+                      className="h-full bg-brand-secondary"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="flex gap-4">
+                  <div className="mt-1">
+                    <CheckCircle2 className="text-green-400" size={20} />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white/90 mb-1">Feedback</h4>
+                    <p className="text-sm text-white/60 leading-relaxed italic serif-italic text-lg">{feedback.feedback}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h4 className="text-xs font-black text-white/40 tracking-[0.2em] uppercase px-1">Refinement Path</h4>
+                  <ul className="space-y-3">
+                    {feedback.suggestions.map((s, i) => (
+                      <li key={`suggestion-${i}`} className="text-xs text-white/60 bg-white/5 p-4 rounded-xl border border-white/5 flex gap-3 leading-relaxed">
+                        <span className="text-brand-primary font-bold">{i + 1}.</span>
+                        {s}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}

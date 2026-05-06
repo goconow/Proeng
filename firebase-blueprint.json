@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and statistics",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string", "format": "uri" },
+        "streak": { "type": "number" },
+        "lastActive": { "type": "string", "format": "date-time" },
+        "isPro": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "streak", "isPro", "createdAt"]
+    },
+    "PracticeHistory": {
+      "title": "Practice History",
+      "description": "A record of a user's practice attempt",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "word": { "type": "string" },
+        "transcript": { "type": "string" },
+        "clarity": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "feedback": { "type": "string" },
+        "suggestions": { "type": "array", "items": { "type": "string" } },
+        "mission": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "word", "transcript", "clarity", "accuracy", "feedback", "createdAt"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Stores user profiles"
+    },
+    "users/{userId}/practice_history/{historyId}": {
+      "schema": "PracticeHistory",
+      "description": "Stores user practice history"
+    }
+  }
+}
