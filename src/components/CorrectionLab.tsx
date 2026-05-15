@@ -26,16 +26,25 @@ export default function CorrectionLab() {
 
     const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).speechRecognition;
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
     recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results)
-        .map((result: any) => result[0])
-        .map((result: any) => result.transcript)
-        .join('');
-      setInput(transcript);
+      let finalTranscript = '';
+      let interimTranscript = '';
+      
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+      
+      if (finalTranscript) {
+        setInput(prev => (prev + ' ' + finalTranscript).trim());
+      }
     };
 
     recognition.onend = () => {
@@ -45,9 +54,16 @@ export default function CorrectionLab() {
     recognition.onerror = (event: any) => {
       console.error('Speech recognition error', event.error);
       setIsRecording(false);
-      if (event.error === 'not-allowed') {
-        setError('Microphone access denied. Please check your browser settings.');
-      }
+      
+      const errorMap: Record<string, string> = {
+        'not-allowed': 'Microphone access denied. If you\'re using the Android app, please ensure RECORD_AUDIO permissions are in your AndroidManifest.xml and granted in your phone\'s app settings.',
+        'no-speech': 'No speech detected. Try speaking a bit louder.',
+        'network': 'Network error. Recognition requires an active internet connection.',
+        'aborted': 'Recognition was interrupted.',
+        'audio-capture': 'No microphone found.',
+      };
+
+      setError(errorMap[event.error] || `Error: ${event.error}`);
     };
 
     recognitionRef.current = recognition;
@@ -57,13 +73,53 @@ export default function CorrectionLab() {
     initRecognition();
   }, [initRecognition]);
 
-  const toggleRecording = () => {
+  const toggleRecording = async () => {
     if (isRecording) {
-      recognitionRef.current?.stop();
+      try {
+        recognitionRef.current?.stop();
+      } catch (err) {
+        console.error('Stop error:', err);
+      }
+      setIsRecording(false);
     } else {
       setError(null);
       setIsRecording(true);
-      recognitionRef.current?.start();
+      
+      try {
+        if (window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+        }
+        
+        // Ensure microfone permissions and "waking up" the mic
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+        
+        setTimeout(() => {
+          try {
+            if (recognitionRef.current) {
+              recognitionRef.current.start();
+            } else {
+              initRecognition();
+              recognitionRef.current?.start();
+            }
+          } catch (startErr: any) {
+             console.error('Start error:', startErr);
+             if (startErr.name === 'InvalidStateError') {
+               setIsRecording(true);
+             } else {
+               setError(`Could not start recognition: ${startErr.message}`);
+               setIsRecording(false);
+             }
+          }
+        }, 100);
+      } catch (e: any) {
+        console.error('Mic permission error:', e);
+        setIsRecording(false);
+        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+          setError("Microphone access denied. If you're using the Android app, please ensure RECORD_AUDIO permissions are in your AndroidManifest.xml and granted in your phone's app settings.");
+        } else {
+          setError(`Microphone error: ${e.message}`);
+        }
+      }
     }
   };
 

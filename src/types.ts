@@ -15,11 +15,20 @@ export interface QuizQuestion {
   explanation: string;
 }
 
+export interface PhoneticDetail {
+  phoneme: string;
+  accuracy: number;
+  tip: string;
+  mouthPosition?: string;
+}
+
 export interface PracticeFeedback {
   clarity: number; // 0-100
   accuracy: number; // 0-100
+  corrected: string;
   feedback: string;
   suggestions: string[];
+  phoneticAnalysis?: PhoneticDetail[];
 }
 
 export interface Achievement {
@@ -38,10 +47,12 @@ export interface PracticeHistory {
   userId: string;
   word: string;
   transcript: string;
+  corrected: string;
   clarity: number;
   accuracy: number;
   feedback: string;
   suggestions: string[];
+  phoneticAnalysis?: PhoneticDetail[];
   mission: string;
   createdAt: any; // Firestore Timestamp
 }

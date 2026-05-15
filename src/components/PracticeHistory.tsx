@@ -126,8 +126,13 @@ export default function PracticeHistory({ onBack }: { onBack: () => void }) {
                 </div>
 
                 <div className="flex-1">
-                    <p className="text-sm text-white/60 line-clamp-1 italic serif-italic">"{item.transcript}"</p>
-                    <div className="flex items-center gap-2 mt-2">
+                    <p className="text-sm text-white/60 italic serif-italic mb-1">"{item.transcript}"</p>
+                    {item.corrected && item.corrected !== item.transcript && (
+                      <p className="text-xs text-brand-primary/80 font-bold leading-tight mb-2">
+                        → {item.corrected}
+                      </p>
+                    )}
+                    <div className="flex items-center gap-2">
                         <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 bg-white/5 rounded text-white/40">
                             {item.mission || 'Free Style'}
                         </span>

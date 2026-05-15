@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, RotateCcw, Send, CheckCircle2, AlertCircle, Volume2 } from 'lucide-react';
+import { Mic, MicOff, RotateCcw, Send, CheckCircle2, AlertCircle, Volume2, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzePractice } from '../lib/gemini';
 import { PracticeFeedback } from '../types';
@@ -27,6 +27,7 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
   const [isRecording, setIsRecording] = useState(false);
   const [isSoundDetected, setIsSoundDetected] = useState(false);
   const [transcript, setTranscript] = useState('');
+  const [interimTranscript, setInterimTranscript] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [feedback, setFeedback] = useState<PracticeFeedback | null>(null);
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
@@ -47,7 +48,7 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
     }
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
@@ -60,19 +61,20 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
     recognition.onsoundend = () => setIsSoundDetected(false);
 
     recognition.onresult = (event: any) => {
-      let interimTranscript = '';
-      let finalTranscript = '';
+      let currentInterim = '';
+      let currentFinal = '';
 
       for (let i = event.resultIndex; i < event.results.length; ++i) {
         if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
+          currentFinal += event.results[i][0].transcript;
         } else {
-          interimTranscript += event.results[i][0].transcript;
+          currentInterim += event.results[i][0].transcript;
         }
       }
 
-      if (finalTranscript) {
-        setTranscript(prev => (prev + ' ' + finalTranscript).trim());
+      setInterimTranscript(currentInterim);
+      if (currentFinal) {
+        setTranscript(prev => (prev + ' ' + currentFinal).trim());
       }
     };
 
@@ -81,7 +83,7 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
       setIsSoundDetected(false);
       
       const errorMap: Record<string, string> = {
-        'not-allowed': 'Microphone access denied. Check your browser permissions.',
+        'not-allowed': 'Microphone access denied. If you\'re using the Android app, please ensure RECORD_AUDIO permissions are in your AndroidManifest.xml and granted in your phone\'s app settings.',
         'no-speech': 'No speech detected. Try speaking a bit louder.',
         'network': 'Network error. Recognition requires an active internet connection.',
         'aborted': 'Recognition was interrupted.',
@@ -109,24 +111,65 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
     };
   }, [initRecognition]);
 
-  const toggleRecording = () => {
+  const toggleRecording = async () => {
     if (isLimitReached) {
       onUpgrade?.();
       return;
     }
 
     if (isRecording) {
-      recognitionRef.current?.stop();
+      try {
+        recognitionRef.current?.stop();
+      } catch (err) {
+        console.error('Stop error:', err);
+      }
+      setIsRecording(false);
+      setInterimTranscript('');
     } else {
       setTranscript('');
+      setInterimTranscript('');
       setFeedback(null);
       setErrorStatus(null);
+      
       try {
-        recognitionRef.current?.start();
-      } catch (e) {
-        // Handle case where recognition might still be in a closing state
-        recognitionRef.current = initRecognition();
-        recognitionRef.current?.start();
+        // Cancel any ongoing speech synthesis to avoid hardware conflicts
+        if (window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+        }
+
+        // Only request getUserMedia if we aren't already recording
+        // We do this to ensure permissions are active and to "wake up" the mic
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+        
+        // Give a tiny breather for the hardware/permission to settle
+        setTimeout(() => {
+          try {
+            if (recognitionRef.current) {
+              recognitionRef.current.start();
+            } else {
+              const rec = initRecognition();
+              if (rec) {
+                recognitionRef.current = rec;
+                rec.start();
+              }
+            }
+          } catch (startErr: any) {
+            console.error('Start error:', startErr);
+            if (startErr.name === 'InvalidStateError') {
+              // Usually means it's already running, let's just update state
+              setIsRecording(true);
+            } else {
+              setErrorStatus(`Could not start recognition: ${startErr.message}`);
+            }
+          }
+        }, 100);
+      } catch (e: any) {
+        console.error('Permission error:', e);
+        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+          setErrorStatus("Microphone access denied. If you're using the Android app, please ensure RECORD_AUDIO permissions are in your AndroidManifest.xml and granted in your phone's app settings.");
+        } else {
+          setErrorStatus(`Microphone error: ${e.message}`);
+        }
       }
     }
   };
@@ -150,10 +193,12 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
             userId: user.uid,
             word: targetWord,
             transcript: transcript,
+            corrected: result.corrected,
             clarity: result.clarity,
             accuracy: result.accuracy,
             feedback: result.feedback,
             suggestions: result.suggestions,
+            phoneticAnalysis: result.phoneticAnalysis,
             mission: activeMission.label,
             createdAt: serverTimestamp()
           });
@@ -171,6 +216,7 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
 
   const reset = () => {
     setTranscript('');
+    setInterimTranscript('');
     setFeedback(null);
   };
 
@@ -282,8 +328,13 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
 
         <div className="mb-6 min-h-[140px] bg-black/20 rounded-2xl p-6 border border-white/5 font-mono text-sm leading-relaxed relative flex flex-col">
           <div className="flex-1">
-            {transcript ? (
-              <span className="text-white/90">{transcript}</span>
+            {transcript || interimTranscript ? (
+              <>
+                <span className="text-white/90">{transcript}</span>
+                {interimTranscript && (
+                  <span className="text-brand-primary/50 italic ml-1">{interimTranscript}</span>
+                )}
+              </>
             ) : (
               <span className="text-white/20 italic">Your speech will appear here...</span>
             )}
@@ -435,6 +486,97 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
                 </button>
               </div>
 
+              {feedback.phoneticAnalysis && feedback.phoneticAnalysis.length > 0 && (
+                <div className="mb-8 space-y-6">
+                  <div className="flex items-center justify-between px-1">
+                    <h4 className="text-xs font-black text-white/40 tracking-[0.2em] uppercase">Vocal Biometrics</h4>
+                    <span className="text-[10px] text-brand-primary font-bold bg-brand-primary/10 px-2 py-0.5 rounded-md border border-brand-primary/20">Advanced Feedback</span>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {feedback.phoneticAnalysis.map((detail, idx) => (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: idx * 0.1 }}
+                        key={`phonetic-${idx}`} 
+                        className="bg-black/40 p-5 rounded-3xl border border-white/10 relative overflow-hidden group hover:border-brand-primary/30 transition-all"
+                      >
+                        {/* Simulated Waveform Visual for each phoneme */}
+                        <div className="absolute top-0 right-0 flex items-end gap-0.5 h-12 px-4 pointer-events-none opacity-20">
+                          {[...Array(8)].map((_, i) => (
+                            <div 
+                              key={i} 
+                              className="w-1 bg-brand-primary rounded-full transition-all duration-500" 
+                              style={{ 
+                                height: `${Math.random() * (detail.accuracy / 2) + 10}%`,
+                              }} 
+                            />
+                          ))}
+                        </div>
+
+                        <div className="flex justify-between items-start relative z-10 mb-4">
+                          <div className="flex flex-col">
+                            <span className="text-3xl font-black text-white mb-0.5">{detail.phoneme}</span>
+                            <span className="text-[9px] font-black uppercase text-brand-primary tracking-[0.2em]">Syllabic Segment</span>
+                          </div>
+                          <div className="text-right">
+                            <span className={`text-sm font-black ${detail.accuracy > 80 ? 'text-green-400' : 'text-brand-primary'}`}>{detail.accuracy}%</span>
+                            <div className="w-20 h-1 bg-white/5 rounded-full mt-1 overflow-hidden">
+                              <motion.div 
+                                initial={{ width: 0 }}
+                                animate={{ width: `${detail.accuracy}%` }}
+                                className={`h-full ${detail.accuracy > 80 ? 'bg-green-400' : 'bg-brand-primary'}`} 
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="space-y-3 relative z-10">
+                          <div className="flex gap-2">
+                             <div className="w-1 bg-brand-primary/40 rounded-full" />
+                             <p className="text-xs text-white/80 font-medium leading-relaxed italic">"{detail.tip}"</p>
+                          </div>
+                          
+                          {detail.mouthPosition && (
+                            <div className="bg-white/5 p-3 rounded-2xl border border-white/5 group-hover:bg-white/10 transition-colors">
+                              <div className="flex items-center gap-1.5 mb-1.5">
+                                <Sparkles size={10} className="text-brand-primary" />
+                                <span className="text-[9px] font-black uppercase text-white/40 tracking-widest leading-none">Mouth Positioning</span>
+                              </div>
+                              <p className="text-[10px] text-white/50 leading-relaxed font-bold italic">
+                                {detail.mouthPosition}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+
+                  {/* Simulated Intonation Curve */}
+                  <div className="bg-white/5 p-6 rounded-3xl border border-white/5">
+                    <div className="flex items-center justify-between mb-4">
+                       <span className="text-[10px] font-black uppercase tracking-widest text-white/40">Prosody & Rhythm Guide</span>
+                    </div>
+                    <div className="relative h-12 flex items-center justify-center">
+                       <svg className="w-full h-full opacity-30" preserveAspectRatio="none" viewBox="0 0 100 20">
+                          <motion.path
+                            d="M0 10 Q 25 2, 50 10 T 100 10"
+                            fill="none"
+                            stroke="var(--brand-primary)"
+                            strokeWidth="1"
+                            initial={{ pathLength: 0 }}
+                            animate={{ pathLength: 1 }}
+                            transition={{ duration: 2, repeat: Infinity }}
+                          />
+                       </svg>
+                       <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white/20 uppercase tracking-[0.5em]">Stress Pattern Detected</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-6 mb-8">
                 <div className="space-y-2">
                   <div className="flex justify-between items-center text-[10px] uppercase tracking-widest font-bold text-white/40">
@@ -465,6 +607,24 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
               </div>
 
               <div className="space-y-6">
+                {feedback.corrected !== transcript && (
+                  <div className="bg-brand-primary/10 p-5 rounded-2xl border border-brand-primary/20 mb-6">
+                    <div className="flex items-center gap-2 mb-2">
+                       <Sparkles size={14} className="text-brand-primary" />
+                       <span className="text-[10px] font-black uppercase tracking-widest text-brand-primary">Recommended Sentence</span>
+                    </div>
+                    <p className="text-lg font-bold text-white leading-relaxed italic">
+                      "{feedback.corrected}"
+                    </p>
+                    <button 
+                      onClick={() => speakFeedback(feedback.corrected)}
+                      className="mt-2 text-[10px] text-brand-primary hover:underline flex items-center gap-1 font-bold uppercase tracking-widest"
+                    >
+                      Listen to native phrasing <Volume2 size={12} />
+                    </button>
+                  </div>
+                )}
+
                 <div className="flex gap-4">
                   <div className="mt-1">
                     <CheckCircle2 className="text-green-400" size={20} />

@@ -71,8 +71,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setAuthError("Sign-in popup was blocked by your browser. Please allow popups for this site.");
       } else if (error.code === 'auth/popup-closed-by-user') {
         setAuthError("The sign-in window was closed before completion.");
+      } else if (error.code === 'auth/invalid-api-key') {
+        setAuthError("Invalid Firebase API Key. Please check your configuration.");
+      } else if (error.code === 'auth/unauthorized-domain') {
+        setAuthError("This domain is not authorized for sign-in. Please add 'localhost' and 'capacitor://localhost' to Authorized Domains in Firebase.");
+      } else if (error.message?.includes('missing initial stage') || error.message?.includes('missing initial state')) {
+        setAuthError("Authentication state mismatch. This often happens in Android apps if the Authorized Domains aren't set correctly. Please ensure 'localhost' is added to Authorized Domains in Firebase Console.");
       } else {
-        setAuthError("Failed to sign in. Please try again.");
+        // Log the full error for the user to see in their developer tools/logs
+        const errorMessage = error.message || "Unknown error";
+        const errorCode = error.code || "unknown";
+        setAuthError(`Sign-in error (${errorCode}): ${errorMessage}`);
         console.error("Sign in error:", error);
       }
     } finally {
