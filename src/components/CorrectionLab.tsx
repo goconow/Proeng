@@ -90,8 +90,10 @@ export default function CorrectionLab() {
           window.speechSynthesis.cancel();
         }
         
-        // Ensure microfone permissions and "waking up" the mic
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Ensure microphone permissions and "waking up" the mic
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Close tracks immediately to free hardware for the SpeechRecognition engine
+        stream.getTracks().forEach(track => track.stop());
         
         setTimeout(() => {
           try {
@@ -106,18 +108,18 @@ export default function CorrectionLab() {
              if (startErr.name === 'InvalidStateError') {
                setIsRecording(true);
              } else {
-               setError(`Could not start recognition: ${startErr.message}`);
+               setError(`Recognition could not start: ${startErr.message}. Ensure no other app is using the mic.`);
                setIsRecording(false);
              }
           }
-        }, 100);
+        }, 200);
       } catch (e: any) {
         console.error('Mic permission error:', e);
         setIsRecording(false);
         if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
           setError("Microphone access denied. If you're using the Android app, please ensure RECORD_AUDIO permissions are in your AndroidManifest.xml and granted in your phone's app settings.");
         } else {
-          setError(`Microphone error: ${e.message}`);
+          setError(`Microphone error: ${e.message}. Please check your device settings.`);
         }
       }
     }

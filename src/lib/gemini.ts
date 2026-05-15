@@ -5,7 +5,12 @@ import { Vocabulary, PracticeFeedback, QuizQuestion } from "../types";
  */
 async function handleGeminiRequest<T>(action: string, payload: any, fallback?: T): Promise<T> {
   try {
-    const response = await fetch('/api/gemini', {
+    // For mobile apps (APK), we need to ensure the URL is absolute if we're not on the server origin
+    // Alternatively, relative URLs work if the WebView is loading the Cloud Run URL directly.
+    const baseUrl = import.meta.env.VITE_APP_URL || '';
+    const apiUrl = `${baseUrl}/api/gemini`;
+
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, payload })
@@ -20,6 +25,7 @@ async function handleGeminiRequest<T>(action: string, payload: any, fallback?: T
   } catch (error: any) {
     console.warn(`Gemini API Error (${action}):`, error);
     
+    // Fallback logic for offline/limit scenarios
     if (fallback) {
       console.info("Using curated offline fallback content.");
       return fallback;
@@ -29,7 +35,7 @@ async function handleGeminiRequest<T>(action: string, payload: any, fallback?: T
       throw new Error("AI Quota Exceeded: We've reached our daily processing limit. Please try again in 24 hours.");
     }
 
-    throw new Error(error.message || "An unexpected error occurred. Please check your connection.");
+    throw new Error(`Connection Error: ${error.message || "Please check your internet connection."}`);
   }
 }
 

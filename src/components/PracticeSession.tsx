@@ -137,9 +137,10 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
           window.speechSynthesis.cancel();
         }
 
-        // Only request getUserMedia if we aren't already recording
-        // We do this to ensure permissions are active and to "wake up" the mic
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Ensure microphone permissions and "waking up" the mic
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Close tracks immediately to free hardware for the SpeechRecognition engine
+        stream.getTracks().forEach(track => track.stop());
         
         // Give a tiny breather for the hardware/permission to settle
         setTimeout(() => {
@@ -159,17 +160,19 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
               // Usually means it's already running, let's just update state
               setIsRecording(true);
             } else {
-              setErrorStatus(`Could not start recognition: ${startErr.message}`);
+              setErrorStatus(`Recognition could not start: ${startErr.message}. Ensure no other app is using the mic.`);
+              setIsRecording(false);
             }
           }
-        }, 100);
+        }, 200);
       } catch (e: any) {
         console.error('Permission error:', e);
         if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
           setErrorStatus("Microphone access denied. If you're using the Android app, please ensure RECORD_AUDIO permissions are in your AndroidManifest.xml and granted in your phone's app settings.");
         } else {
-          setErrorStatus(`Microphone error: ${e.message}`);
+          setErrorStatus(`Microphone error: ${e.message}. Please check your device settings.`);
         }
+        setIsRecording(false);
       }
     }
   };
