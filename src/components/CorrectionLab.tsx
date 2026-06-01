@@ -5,6 +5,7 @@ import { analyzeFreeSpeech } from '../lib/gemini';
 
 export default function CorrectionLab() {
   const [input, setInput] = useState('');
+  const [interimInput, setInterimInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<{ 
@@ -16,6 +17,7 @@ export default function CorrectionLab() {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   
+  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const recognitionRef = useRef<any>(null);
 
   const initRecognition = useCallback(() => {
@@ -29,26 +31,69 @@ export default function CorrectionLab() {
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
+    recognition.maxAlternatives = 1;
 
     recognition.onresult = (event: any) => {
-      let finalTranscript = '';
+      // Reset silence timer
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        if (recognitionRef.current) {
+          try {
+            recognitionRef.current.stop();
+          } catch (e) {
+            console.error('Auto-stop error:', e);
+          }
+        }
+      }, 3000);
+
+      const rawFinalSegments: string[] = [];
       let interimTranscript = '';
       
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
+      for (let i = 0; i < event.results.length; ++i) {
+        const result = event.results[i];
+        const transcriptSegment = result[0].transcript;
+        if (result.isFinal) {
+          rawFinalSegments.push(transcriptSegment.trim());
         } else {
-          interimTranscript += event.results[i][0].transcript;
+          interimTranscript += transcriptSegment;
         }
       }
       
-      if (finalTranscript) {
-        setInput(prev => (prev + ' ' + finalTranscript).trim());
+      // Deduplicate overlapping segments
+      const finalSegments: string[] = [];
+      rawFinalSegments.forEach(seg => {
+        if (finalSegments.length === 0) {
+          finalSegments.push(seg);
+        } else {
+          const prev = finalSegments[finalSegments.length - 1].toLowerCase();
+          const curr = seg.toLowerCase();
+          
+          if (curr.startsWith(prev)) {
+            finalSegments[finalSegments.length - 1] = seg;
+          } else if (!prev.includes(curr)) {
+            finalSegments.push(seg);
+          }
+        }
+      });
+
+      const finalJoined = finalSegments.join(' ');
+      setInput(finalJoined);
+
+      let cleanedInterim = interimTranscript;
+      if (finalJoined && interimTranscript) {
+        const lastFinalPart = finalSegments[finalSegments.length - 1].toLowerCase();
+        const interimLower = interimTranscript.toLowerCase();
+        
+        if (interimLower.startsWith(lastFinalPart)) {
+          cleanedInterim = interimTranscript.slice(lastFinalPart.length).trim();
+        }
       }
+      setInterimInput(cleanedInterim);
     };
 
     recognition.onend = () => {
       setIsRecording(false);
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     };
 
     recognition.onerror = (event: any) => {
@@ -75,51 +120,42 @@ export default function CorrectionLab() {
 
   const toggleRecording = async () => {
     if (isRecording) {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       try {
         recognitionRef.current?.stop();
       } catch (err) {
         console.error('Stop error:', err);
       }
       setIsRecording(false);
+      setInterimInput('');
     } else {
       setError(null);
       setIsRecording(true);
+      setInterimInput('');
       
       try {
         if (window.speechSynthesis) {
           window.speechSynthesis.cancel();
         }
         
-        // Ensure microphone permissions and "waking up" the mic
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Close tracks immediately to free hardware for the SpeechRecognition engine
-        stream.getTracks().forEach(track => track.stop());
-        
-        setTimeout(() => {
+        if (recognitionRef.current) {
           try {
-            if (recognitionRef.current) {
-              recognitionRef.current.start();
-            } else {
-              initRecognition();
-              recognitionRef.current?.start();
-            }
-          } catch (startErr: any) {
-             console.error('Start error:', startErr);
-             if (startErr.name === 'InvalidStateError') {
-               setIsRecording(true);
-             } else {
-               setError(`Recognition could not start: ${startErr.message}. Ensure no other app is using the mic.`);
-               setIsRecording(false);
-             }
+            recognitionRef.current.start();
+          } catch (e: any) {
+            if (e.name !== 'InvalidStateError') throw e;
+            setIsRecording(true);
           }
-        }, 200);
+        } else {
+          initRecognition();
+          recognitionRef.current?.start();
+        }
       } catch (e: any) {
         console.error('Mic permission error:', e);
         setIsRecording(false);
-        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
-          setError("Microphone access denied. If you're using the Android app, please ensure RECORD_AUDIO permissions are in your AndroidManifest.xml and granted in your phone's app settings.");
+        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError' || e.message?.includes('denied')) {
+          setError("Microphone access denied. Please allow microphone permissions in your browser or app settings.");
         } else {
-          setError(`Microphone error: ${e.message}. Please check your device settings.`);
+          setError(`Microphone error: ${e.message || 'Could not start recognition'}. Please check your device settings.`);
         }
       }
     }
@@ -161,12 +197,56 @@ export default function CorrectionLab() {
 
       <div className="glass p-8 rounded-[2.5rem] border border-white/10 shadow-3xl">
         <div className="relative mb-6">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Type or click the mic to speak anything..."
-            className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 text-white text-sm focus:outline-none focus:border-brand-primary/50 transition-all min-h-[120px] resize-none"
-          />
+            <div className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 text-white text-sm min-h-[140px] relative overflow-hidden focus-within:border-brand-primary/50 transition-all flex flex-col">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Type or click the mic to speak anything..."
+                className="w-full flex-1 bg-transparent border-none p-0 focus:ring-0 resize-none outline-none leading-relaxed"
+              />
+              {(input || interimInput) && isRecording && (
+                <div className="mt-4 flex items-center justify-between">
+                  <div className="flex-1">
+                    {interimInput && (
+                      <span className="text-brand-primary/50 italic">... {interimInput}</span>
+                    )}
+                  </div>
+                  <div className="flex items-end gap-0.5 h-4 px-2">
+                    {[...Array(6)].map((_, i) => (
+                      <motion.div
+                        key={`lab-bar-${i}`}
+                        animate={{
+                          height: [4, Math.random() * 12 + 4, 4],
+                        }}
+                        transition={{
+                          duration: 0.4,
+                          repeat: Infinity,
+                          delay: i * 0.05,
+                        }}
+                        className="w-0.5 bg-brand-primary/40 rounded-full"
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {isRecording && !input && !interimInput && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/20 backdrop-blur-sm pointer-events-none">
+                  <div className="flex items-center gap-3">
+                    <div className="flex gap-1">
+                      {[0, 1, 2].map(i => (
+                        <motion.div 
+                          key={i}
+                          animate={{ scale: [1, 1.5, 1], opacity: [0.3, 1, 0.3] }}
+                          transition={{ repeat: Infinity, duration: 1, delay: i * 0.2 }}
+                          className="w-1.5 h-1.5 bg-brand-primary rounded-full"
+                        />
+                      ))}
+                    </div>
+                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-brand-primary animate-pulse">Listening</span>
+                  </div>
+                </div>
+              )}
+            </div>
           
           <div className="absolute bottom-4 right-4 flex items-center gap-2">
             <motion.button

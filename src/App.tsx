@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Sparkles, History, LayoutDashboard, Settings as SettingsIcon, Menu, X, ChevronLeft, ChevronRight, Crown, LogOut, LogIn, AlertCircle, Trophy } from 'lucide-react';
+import { Sparkles, Compass, History, LayoutDashboard, Settings as SettingsIcon, Menu, X, ChevronLeft, ChevronRight, Crown, LogOut, LogIn, AlertCircle, Trophy } from 'lucide-react';
 import WordCard from './components/WordCard';
 import PracticeSession from './components/PracticeSession';
 import DailyQuiz from './components/DailyQuiz';
@@ -9,6 +9,7 @@ import Pricing from './components/Pricing';
 import Achievements from './components/Achievements';
 import AchievementToast from './components/AchievementToast';
 import PracticeHistory from './components/PracticeHistory';
+import SentencePractice from './components/SentencePractice';
 import { generateDailySession } from './lib/gemini';
 import { Vocabulary, Achievement } from './types';
 import { useAuth } from './context/AuthContext';
@@ -40,7 +41,7 @@ export default function App() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [streak, setStreak] = useState(5); // Mock streak
-  const [activeView, setActiveView] = useState<'dashboard' | 'history'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'history' | 'sentences'>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isPro, setIsPro] = useState(() => {
     return localStorage.getItem('proeng_is_pro') === 'true';
@@ -96,53 +97,82 @@ export default function App() {
     });
   }, [streak, masteredWords]);
 
-  useEffect(() => {
-    testConnection(); // Verify Firebase connection
-    async function load() {
-      // Check cache first
-      const today = new Date().toISOString().split('T')[0];
-      const cached = localStorage.getItem(CACHE_KEY);
-      
-      if (cached) {
+  const loadSession = useCallback(async (forceRefresh = false) => {
+    setLoading(true);
+    setError(null);
+    setCurrentIndex(0);
+
+    const today = new Date().toISOString().split('T')[0];
+    const cached = forceRefresh ? null : localStorage.getItem(CACHE_KEY);
+    
+    if (cached) {
+      try {
         const { date, data } = JSON.parse(cached);
         if (date === today && data && data.length > 0) {
           setWords(data);
           setLoading(false);
           return;
         }
-      }
-
-      setError(null);
-      try {
-        const wordList = await generateDailySession(5);
-        setWords(wordList);
-        
-        // Cache the result
-        localStorage.setItem(CACHE_KEY, JSON.stringify({
-          date: today,
-          data: wordList
-        }));
-      } catch (error: any) {
-        console.error('Failed to load session content', error);
-        setError(error.message || 'Failed to load today\'s session. Please check your connection and try again.');
-      } finally {
-        setLoading(false);
+      } catch (e) {
+        console.warn('Failed to parse cache', e);
       }
     }
-    load();
+
+    try {
+      const wordList = await generateDailySession(5);
+      setWords(wordList);
+      
+      // Cache the result
+      localStorage.setItem(CACHE_KEY, JSON.stringify({
+        date: today,
+        data: wordList
+      }));
+    } catch (error: any) {
+      console.error('Failed to load session content', error);
+      setError(error.message || 'Failed to load today\'s session. Please check your connection and try again.');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const handleNextWord = () => {
-    if (currentIndex < words.length - 1) {
-      setCurrentIndex(prev => prev + 1);
-    }
-  };
+  useEffect(() => {
+    testConnection(); // Verify Firebase connection
+    loadSession();
+  }, [loadSession]);
 
-  const handlePrevWord = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex(prev => prev - 1);
-    }
-  };
+  const handleNextWord = useCallback(() => {
+    setCurrentIndex(prev => {
+      if (prev < words.length - 1) return prev + 1;
+      return prev;
+    });
+  }, [words.length]);
+
+  const handlePrevWord = useCallback(() => {
+    setCurrentIndex(prev => {
+      if (prev > 0) return prev - 1;
+      return prev;
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // ONLY block if we are in a textarea where arrow keys are needed for cursor movement
+      if (e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handlePrevWord();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleNextWord();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handlePrevWord, handleNextWord]);
 
   const speak = (text: string) => {
     const utterance = new SpeechSynthesisUtterance(text);
@@ -199,6 +229,16 @@ export default function App() {
               isOpen={isSidebarOpen} 
               onClick={() => {
                 setActiveView('dashboard');
+                if (window.innerWidth < 768) setIsSidebarOpen(false);
+              }}
+            />
+            <NavItem 
+              icon={<Compass size={22} />} 
+              label="Sentence Practice" 
+              active={activeView === 'sentences'} 
+              isOpen={isSidebarOpen} 
+              onClick={() => {
+                setActiveView('sentences');
                 if (window.innerWidth < 768) setIsSidebarOpen(false);
               }}
             />
@@ -448,6 +488,18 @@ export default function App() {
             >
               <PracticeHistory onBack={() => setActiveView('dashboard')} />
             </motion.div>
+          ) : activeView === 'sentences' ? (
+            <motion.div
+              key="sentences-view"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <SentencePractice isPro={isPro} onUpgrade={() => {
+                setShowPricing(true);
+                if (window.innerWidth < 768) setIsSidebarOpen(false);
+              }} />
+            </motion.div>
           ) : (
             <motion.div
               key="dashboard-view"
@@ -473,6 +525,14 @@ export default function App() {
                     <div className="flex items-center gap-3">
                       <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
                       <span className="text-xs font-bold text-white/80">LIVE • VOCABULARY ENGINE ACTIVE</span>
+                      <button 
+                        onClick={() => loadSession(true)}
+                        className="ml-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-brand-primary transition-all flex items-center gap-2 group"
+                        title="Regenerate Daily Session"
+                      >
+                        <History size={12} className="group-active:rotate-180 transition-transform duration-500" />
+                        <span>Refresh Session</span>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -637,10 +697,10 @@ export default function App() {
                         <p className="text-sm text-white/40 leading-relaxed italic">{error}</p>
                       </div>
                       <button 
-                        onClick={() => window.location.reload()}
+                        onClick={() => loadSession(true)}
                         className="px-8 py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-[10px] font-black uppercase tracking-widest transition-all"
                       >
-                        Reload Experience
+                        Try Again
                       </button>
                     </motion.div>
                   ) : words.length > 0 && (

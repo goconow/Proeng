@@ -2,5 +2,10 @@
   "name": "Proeng",
   "description": "An AI-powered spoken English companion that elevates your vocabulary through daily immersive practice, voice feedback, and personalized learning paths.",
   "requestFramePermissions": ["microphone"],
-  "majorCapabilities": ["AI Vocabulary Generation", "Voice Feedback", "Pronunciation Practice"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API",
+    "AI Vocabulary Generation",
+    "Voice Feedback",
+    "Pronunciation Practice"
+  ]
 }

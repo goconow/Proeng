@@ -56,3 +56,31 @@ export interface PracticeHistory {
   mission: string;
   createdAt: any; // Firestore Timestamp
 }
+
+export interface ContextualSentence {
+  text: string;
+  phonetic: string;
+  whyNatural: string;
+  intonation: string;
+}
+
+export interface ContextualScenario {
+  scenarioName: string;
+  description: string;
+  sentences: ContextualSentence[];
+}
+
+export interface SentenceFeedback {
+  naturalnessScore: number;
+  fluencyScore: number;
+  soundAccuracy: number;
+  feedback: string;
+  nativeAlternative?: string;
+  tips: string[];
+  phoneticAnalysis?: {
+    segment: string;
+    score: number;
+    tip: string;
+  }[];
+}
+

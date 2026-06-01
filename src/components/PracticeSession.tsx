@@ -34,6 +34,7 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
   const [speechRate, setSpeechRate] = useState(0.9);
   const [practiceCount, setPracticeCount] = useState(0);
   
+  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const FREE_LIMIT = 3;
   const isLimitReached = !isPro && practiceCount >= FREE_LIMIT;
   
@@ -51,6 +52,7 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
+    recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
       setIsRecording(true);
@@ -61,21 +63,64 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
     recognition.onsoundend = () => setIsSoundDetected(false);
 
     recognition.onresult = (event: any) => {
-      let currentInterim = '';
-      let currentFinal = '';
+      // Reset silence timer on speech activity
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        if (recognitionRef.current) {
+          try {
+            recognitionRef.current.stop();
+          } catch (e) {
+            console.error('Auto-stop error:', e);
+          }
+        }
+      }, 3000);
 
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          currentFinal += event.results[i][0].transcript;
+      const rawFinalSegments: string[] = [];
+      let currentInterim = '';
+
+      for (let i = 0; i < event.results.length; ++i) {
+        const result = event.results[i];
+        const transcriptSegment = result[0].transcript;
+        
+        if (result.isFinal) {
+          rawFinalSegments.push(transcriptSegment.trim());
         } else {
-          currentInterim += event.results[i][0].transcript;
+          currentInterim += transcriptSegment;
         }
       }
 
-      setInterimTranscript(currentInterim);
-      if (currentFinal) {
-        setTranscript(prev => (prev + ' ' + currentFinal).trim());
+      // Deduplicate overlapping segments (fixes common browser/platform repetition bugs)
+      const finalSegments: string[] = [];
+      rawFinalSegments.forEach(seg => {
+        if (finalSegments.length === 0) {
+          finalSegments.push(seg);
+        } else {
+          const prev = finalSegments[finalSegments.length - 1].toLowerCase();
+          const curr = seg.toLowerCase();
+          
+          if (curr.startsWith(prev)) {
+            finalSegments[finalSegments.length - 1] = seg;
+          } else if (!prev.includes(curr)) {
+            finalSegments.push(seg);
+          }
+        }
+      });
+
+      const finalJoined = finalSegments.join(' ');
+      setTranscript(finalJoined);
+      
+      // Clean up interim to avoid showing text that was just finalized
+      let cleanedInterim = currentInterim;
+      if (finalJoined && currentInterim) {
+        const lastFinalPart = finalSegments[finalSegments.length - 1].toLowerCase();
+        const interimLower = currentInterim.toLowerCase();
+        
+        if (interimLower.startsWith(lastFinalPart)) {
+          cleanedInterim = currentInterim.slice(lastFinalPart.length).trim();
+        }
       }
+      
+      setInterimTranscript(cleanedInterim);
     };
 
     recognition.onerror = (event: any) => {
@@ -97,6 +142,7 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
     recognition.onend = () => {
       setIsRecording(false);
       setIsSoundDetected(false);
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     };
 
     return recognition;
@@ -118,6 +164,7 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
     }
 
     if (isRecording) {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       try {
         recognitionRef.current?.stop();
       } catch (err) {
@@ -137,42 +184,33 @@ export default function PracticeSession({ targetWord, isPro = false, onUpgrade, 
           window.speechSynthesis.cancel();
         }
 
-        // Ensure microphone permissions and "waking up" the mic
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Close tracks immediately to free hardware for the SpeechRecognition engine
-        stream.getTracks().forEach(track => track.stop());
-        
-        // Give a tiny breather for the hardware/permission to settle
-        setTimeout(() => {
+        // We'll trust the SpeechRecognition engine to handle permissions.
+        // If it's already initialized, just start.
+        if (recognitionRef.current) {
           try {
-            if (recognitionRef.current) {
-              recognitionRef.current.start();
-            } else {
-              const rec = initRecognition();
-              if (rec) {
-                recognitionRef.current = rec;
-                rec.start();
-              }
-            }
-          } catch (startErr: any) {
-            console.error('Start error:', startErr);
-            if (startErr.name === 'InvalidStateError') {
-              // Usually means it's already running, let's just update state
-              setIsRecording(true);
-            } else {
-              setErrorStatus(`Recognition could not start: ${startErr.message}. Ensure no other app is using the mic.`);
-              setIsRecording(false);
-            }
+            recognitionRef.current.start();
+          } catch (e: any) {
+             // In case of InvalidStateError (already started), the handler will set setIsRecording
+             if (e.name !== 'InvalidStateError') {
+               throw e;
+             }
+             setIsRecording(true);
           }
-        }, 200);
-      } catch (e: any) {
-        console.error('Permission error:', e);
-        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
-          setErrorStatus("Microphone access denied. If you're using the Android app, please ensure RECORD_AUDIO permissions are in your AndroidManifest.xml and granted in your phone's app settings.");
         } else {
-          setErrorStatus(`Microphone error: ${e.message}. Please check your device settings.`);
+          const rec = initRecognition();
+          if (rec) {
+            recognitionRef.current = rec;
+            rec.start();
+          }
         }
+      } catch (e: any) {
+        console.error('Speech start error:', e);
         setIsRecording(false);
+        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError' || e.message?.includes('denied')) {
+          setErrorStatus("Microphone access denied. Please ensure you've allowed microphone access in your browser or app settings.");
+        } else {
+          setErrorStatus(`Microphone error: ${e.message || 'Could not start recognition'}. Please check your device settings.`);
+        }
       }
     }
   };

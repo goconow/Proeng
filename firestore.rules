@@ -40,14 +40,8 @@ service cloud.firestore {
     }
 
     function isValidHistory(data) {
-      return data.keys().hasAll(['userId', 'word', 'transcript', 'clarity', 'accuracy', 'feedback', 'createdAt']) &&
-             data.keys().size() <= 9 &&
+      return data.keys().hasAll(['userId', 'word', 'transcript', 'clarity', 'accuracy', 'createdAt']) &&
              data.userId == request.auth.uid &&
-             data.word is string && data.word.size() <= 100 &&
-             data.transcript is string && data.transcript.size() <= 2000 &&
-             data.clarity is number && data.clarity >= 0 && data.clarity <= 100 &&
-             data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100 &&
-             data.feedback is string && data.feedback.size() <= 5000 &&
              data.createdAt == request.time;
     }
 
@@ -55,23 +49,12 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow get: if isOwner(userId);
-      // No list for users
-      
-      allow create: if isOwner(userId) && isValidUser(incoming());
-      
-      allow update: if isOwner(userId) && (
-        // Action: Update Stats
-        (incoming().diff(existing()).affectedKeys().hasOnly(['streak', 'lastActive']) &&
-         incoming().streak is number &&
-         incoming().lastActive is string)
-      );
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
       
       match /practice_history/{historyId} {
-        allow list: if isOwner(userId);
-        allow get: if isOwner(userId);
-        
-        allow create: if isOwner(userId) && isValidId(historyId) && isValidHistory(incoming());
-        // History items are immutable
+        allow list, get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidHistory(incoming());
       }
     }
   }

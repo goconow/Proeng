@@ -24,10 +24,22 @@
         "userId": { "type": "string" },
         "word": { "type": "string" },
         "transcript": { "type": "string" },
+        "corrected": { "type": "string" },
         "clarity": { "type": "number" },
         "accuracy": { "type": "number" },
         "feedback": { "type": "string" },
         "suggestions": { "type": "array", "items": { "type": "string" } },
+        "phoneticAnalysis": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "phoneme": { "type": "string" },
+              "accuracy": { "type": "number" },
+              "tip": { "type": "string" }
+            }
+          } 
+        },
         "mission": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
